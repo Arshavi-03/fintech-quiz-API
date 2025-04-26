@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Form, Request, Body
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -9,9 +9,9 @@ import joblib
 import random
 import time
 import json
+import re
+import requests  # Use requests instead of OpenAI client for compatibility
 from dotenv import load_dotenv
-from openai import OpenAI
-import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -36,8 +36,6 @@ app.add_middleware(
 # Mount static files directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Setup templates
-
 # Load model data
 MODEL_PATH = "models/fintech_quiz_model_data.joblib"
 try:
@@ -54,9 +52,6 @@ try:
 except Exception as e:
     print(f"Error loading model: {e}")
     raise
-
-# Initialize OpenAI client
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Pre-generated quizzes cache
 QUIZ_CACHE = {}
@@ -87,6 +82,35 @@ class BatchQuizRequest(BaseModel):
     topics: Optional[List[str]] = None
     difficulties: Optional[List[str]] = None
     num_questions: Optional[int] = None
+
+# Function to call OpenAI API directly with requests
+def call_openai_api(prompt, model="gpt-3.5-turbo", temperature=0.7):
+    """Call OpenAI API using direct HTTP requests instead of client library"""
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENAI_API_KEY}"
+    }
+    
+    data = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are an expert in finance and fintech who creates educational content."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": temperature,
+        "max_tokens": 3000
+    }
+    
+    response = requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers=headers,
+        json=data
+    )
+    
+    if response.status_code != 200:
+        raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+    
+    return response.json()["choices"][0]["message"]["content"]
 
 # Quiz generation function
 def generate_quiz_questions(dataset_summary, topic, difficulty='medium', num_questions=15):
@@ -139,22 +163,8 @@ def generate_quiz_questions(dataset_summary, topic, difficulty='medium', num_que
         else:  # hard
             temp = 0.8
             
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are an expert in finance and fintech who creates educational content."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=temp,
-            max_tokens=3000
-        )
-        
-        # Extract the JSON content from the response
-        content = response.choices[0].message.content
-        
-        # Parse the JSON content
-        import re
-        import json
+        # Call OpenAI API with our function
+        content = call_openai_api(prompt, model="gpt-3.5-turbo", temperature=temp)
         
         # Find JSON array in the response
         match = re.search(r'\[.*\]', content, re.DOTALL)
@@ -178,14 +188,9 @@ def generate_quiz_questions(dataset_summary, topic, difficulty='medium', num_que
         try:
             simple_prompt = f"Create {num_questions} multiple-choice {difficulty} questions about {topic}. Each question should have 4 options with one correct answer. Format as JSON array."
             
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": simple_prompt}],
-                temperature=0.5,
-                max_tokens=2000
-            )
+            # Try with simplified prompt
+            content = call_openai_api(simple_prompt, model="gpt-3.5-turbo", temperature=0.5)
             
-            content = response.choices[0].message.content
             match = re.search(r'\[.*\]', content, re.DOTALL)
             
             if match:
@@ -195,8 +200,8 @@ def generate_quiz_questions(dataset_summary, topic, difficulty='medium', num_que
                 return questions
             else:
                 return []
-        except:
-            print("❌ Failed even with simplified approach")
+        except Exception as e:
+            print(f"❌ Failed even with simplified approach: {e}")
             return []
 
 def generate_quiz_id(topic, difficulty):
@@ -369,6 +374,10 @@ async def submit_quiz(submission: QuizSubmission):
 @app.post("/generate-all-quizzes")
 async def generate_all_quizzes(request: BatchQuizRequest = Body(default=None)):
     """Generate quizzes for all topics and difficulties or specified combinations"""
+    # If no request body provided, initialize empty
+    if request is None:
+        request = BatchQuizRequest()
+        
     # If no specific topics requested, use all available topics
     topics = request.topics if request.topics else list(QUIZ_TOPICS.keys())
     
@@ -458,7 +467,23 @@ async def list_quizzes():
     
     return {"quizzes": available_quizzes}
 
-# Run the application
+# Pre-generate quizzes on startup
+@app.on_event("startup")
+async def startup_event():
+    print("Starting pre-generation of quizzes...")
+    try:
+        # Generate a quiz for one topic/difficulty as a test
+        first_topic = list(QUIZ_TOPICS.keys())[0]
+        print(f"Pre-generating a quiz for {first_topic} (easy)...")
+        quiz = await generate_quiz_for_topic_difficulty(first_topic, "easy", 5)
+        if quiz:
+            cache_key = f"{first_topic}_easy"
+            QUIZ_CACHE[cache_key] = quiz
+            print(f"✅ Successfully pre-generated test quiz")
+    except Exception as e:
+        print(f"❌ Error pre-generating quiz: {e}")
+
+# For local development only
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
