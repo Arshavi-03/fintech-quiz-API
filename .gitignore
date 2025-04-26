@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# API keys and secrets
+.env
+api_key.txt
+
+# Logs
+logs/
+*.log
+
+# Local development
+.idea/
+.vscode/
+
+# Generated content
+*/quiz_*.json
