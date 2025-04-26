@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, Form, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -38,7 +37,6 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Setup templates
-templates = Jinja2Templates(directory="templates")
 
 # Load model data
 MODEL_PATH = "models/fintech_quiz_model_data.joblib"
